@@ -1,11 +1,14 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:mi_test/bloc/home/product_bloc.dart';
+import 'package:mi_test/bloc/home/product_state.dart';
 import 'package:mi_test/utils/constant.dart';
 
 import '../bloc/home/home_bloc.dart';
 import '../bloc/home/home_event.dart';
 import '../bloc/home/home_state.dart';
+import '../bloc/home/product_event.dart';
 import '../bloc/internet_bloc.dart';
 import '../bloc/internet_state.dart';
 import '../services/models/MAlbum.dart';
@@ -37,9 +40,12 @@ class _HomeScreenState extends State<HomeScreen> {
         appBar: AppBar(
           title: const Text("Home"),
         ),
-        body: AlbumList(
-          homeBloc: homeBloc,
-          scrollController: _scrollController,
+        body: BlocProvider(
+          create: (context) => InternetBloc(),
+          child: AlbumList(
+            homeBloc: homeBloc,
+            scrollController: _scrollController,
+          ),
         ));
   }
 
@@ -53,8 +59,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _onScroll() {
     if (_isBottom) {
-      homeBloc.pageCount += 10;
-      homeBloc.add(HomeAlbumLoadMoreEvent(homeBloc.pageCount));
+      if (!homeBloc.isLoadMorePending) {
+        homeBloc.isLoadMorePending = true;
+        homeBloc.pageCount += 10;
+        homeBloc.add(HomeAlbumLoadMoreEvent(homeBloc.pageCount));
+      }
     }
   }
 
@@ -67,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class AlbumList extends StatelessWidget {
-  const AlbumList({
+  AlbumList({
     super.key,
     required ScrollController scrollController,
     required this.homeBloc,
@@ -78,27 +87,47 @@ class AlbumList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<HomeBloc, HomeState>(
-      bloc: homeBloc,
-      builder: (context, state) {
-        switch (state.runtimeType) {
-          case HomeAlbumInitialState:
-            return const Center(child: CircularProgressIndicator());
-          case HomeAlbumSuccessState:
-            final homeState = state as HomeAlbumSuccessState;
-            return VerticalList(
-              homeState: homeState,
-              scrollController: _scrollController,
-            );
-          case HomeAlbumErrorState:
-            final myState = state as HomeAlbumErrorState;
-            return Center(
-              child: Text(myState.errMsg),
-            );
-          default:
-            return Container();
+    return BlocListener<InternetBloc, InternetState>(
+      listener: (context, state) {
+        if (homeBloc.state is HomeAlbumErrorState) {
+          if (state is InternetGainedState) {
+            snackBar(context, success_internetAvailableMessage, false);
+            homeBloc.add(HomeAlbumFetchEvent());
+          }
         }
       },
+      child: BlocBuilder<HomeBloc, HomeState>(
+        bloc: homeBloc,
+        builder: (context, state) {
+          switch (state.runtimeType) {
+            case HomeAlbumInitialState:
+              return const Center(child: CircularProgressIndicator());
+            case HomeAlbumSuccessState:
+              final homeState = state as HomeAlbumSuccessState;
+              return VerticalList(
+                  homeBloc: homeBloc,
+                  homeState: homeState,
+                  scrollController: _scrollController);
+            case HomeAlbumErrorState:
+              final myState = state as HomeAlbumErrorState;
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.wifi_off, size: 35),
+                    verticalSpace(16),
+                    Text(
+                      myState.errMsg,
+                      style: const TextStyle(fontSize: 20),
+                    ),
+                  ],
+                ),
+              );
+            default:
+              return Container();
+          }
+        },
+      ),
     );
   }
 }
@@ -108,8 +137,10 @@ class VerticalList extends StatelessWidget {
     super.key,
     required this.homeState,
     required this.scrollController,
+    required this.homeBloc,
   });
 
+  final HomeBloc homeBloc;
   final HomeAlbumSuccessState homeState;
   final ScrollController scrollController;
 
@@ -119,12 +150,12 @@ class VerticalList extends StatelessWidget {
         stream: homeState.streamAlbumList,
         builder: (context, snapshot) {
           if (snapshot.hasData) {
+            List<MAlbum> list = snapshot.data!;
             return ListView.separated(
-              itemCount: snapshot.data!.length + 1,
+              itemCount: list.length + 1,
               controller: scrollController,
               itemBuilder: (context, index) {
-                print("---Index --- $index---");
-                return index >= snapshot.data!.length
+                return index >= list.length
                     ? const Center(
                         child: SizedBox(
                           height: 24,
@@ -138,14 +169,14 @@ class VerticalList extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              snapshot.data![index].title ?? "-",
+                              list[index].title ?? "-",
                               style: const TextStyle(fontSize: 16),
                             ),
                             verticalSpace(8),
                             SizedBox(
                               height: 100,
                               child: HorizontalList(
-                                albumId: snapshot.data![index].id!,
+                                mAlbum: snapshot.data![index],
                                 parentIndex: index,
                               ),
                             ),
@@ -171,11 +202,11 @@ class VerticalList extends StatelessWidget {
 }
 
 class HorizontalList extends StatefulWidget {
-  final int albumId;
   final int parentIndex;
+  final MAlbum mAlbum;
 
   const HorizontalList(
-      {super.key, required this.albumId, required this.parentIndex});
+      {super.key, required this.parentIndex, required this.mAlbum});
 
   @override
   State<HorizontalList> createState() => _HorizontalListState();
@@ -183,31 +214,37 @@ class HorizontalList extends StatefulWidget {
 
 class _HorizontalListState extends State<HorizontalList> {
   final productScrollController = ScrollController();
-  HomeBloc homeBloc = HomeBloc();
+  ProductBloc productBloc = ProductBloc();
   int pageCount = 1;
 
   @override
   void initState() {
-    homeBloc.add(HomeProductFetchEvent(widget.albumId, widget.parentIndex, 1));
+    productBloc
+        .add(HomeProductFetchEvent(widget.mAlbum.id!, widget.parentIndex, 1));
     productScrollController.addListener(_onProductScroll);
     super.initState();
   }
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<HomeBloc, HomeState>(
-      bloc: homeBloc,
+    return BlocBuilder<ProductBloc, ProductState>(
+      bloc: productBloc,
       builder: (context, state) {
-        if (state is HomeProductSuccessState) {
+        if (state is HomeProductInitialState) {
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
+        } else if (state is HomeProductSuccessState) {
           return StreamBuilder<List<MProduct>>(
               stream: state.streamProductList,
               builder: (context, snapshot) {
                 if (snapshot.hasData) {
-                  pageCount = snapshot.data!.length+1;
+                  pageCount = snapshot.data!.length + 1;
                   return ListView.builder(
                       controller: productScrollController,
                       itemCount: snapshot.data!.length + 1,
-                      key: PageStorageKey<String>('Page${widget.albumId}'),
+                      key: PageStorageKey<String>(
+                          'Page${widget.parentIndex}${widget.mAlbum.id!}'),
                       scrollDirection: Axis.horizontal,
                       itemBuilder: (context, index) {
                         return index >= snapshot.data!.length
@@ -254,8 +291,17 @@ class _HorizontalListState extends State<HorizontalList> {
 
   void _onProductScroll() {
     if (_isProductLast) {
-      homeBloc.add(HomeProductLoadMoreEvent(
-          pageCount, widget.parentIndex, widget.albumId));
+      MAlbum myProductAlbum = productBloc.listProducts.singleWhere(
+          (element) => (element.id == widget.mAlbum.id),
+          orElse: () => MAlbum());
+      if (!myProductAlbum.isLoadMorePending) {
+        productBloc.listProducts
+            .where((element) => (element.id == widget.mAlbum.id))
+            .single
+            .isLoadMorePending = true;
+        productBloc.add(HomeProductLoadMoreEvent(myProductAlbum.pageCount + 10,
+            widget.parentIndex, widget.mAlbum.id!));
+      }
     }
   }
 

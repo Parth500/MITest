@@ -19,28 +19,10 @@ class HomeAlbumErrorState extends HomeState {
   final String errMsg;
 
   HomeAlbumErrorState(this.errMsg);
-
-  @override
-  List<Object> get props => [errMsg];
 }
 
 class HomeAlbumSuccessState extends HomeState {
-  Stream<List<MAlbum>> streamAlbumList;
+  final Stream<List<MAlbum>> streamAlbumList;
 
   HomeAlbumSuccessState(this.streamAlbumList);
-}
-
-//All Product Fetch State
-class HomeProductInitialState extends HomeState {}
-
-class HomeProductErrorState extends HomeState {
-  String errMsg;
-
-  HomeProductErrorState(this.errMsg);
-}
-
-class HomeProductSuccessState extends HomeState {
-  Stream<List<MProduct>> streamProductList;
-
-  HomeProductSuccessState(this.streamProductList);
 }

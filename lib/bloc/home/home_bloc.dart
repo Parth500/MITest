@@ -14,143 +14,97 @@ import 'home_state.dart';
 
 class HomeBloc extends Bloc<HomeEvent, HomeState> {
   late AlbumDB mAlbumDB;
-  late ProductDB mProductDB;
 
   //Album ----------------------------------------------------------------------
   List<MAlbum> mList = [];
   int pageCount = 1;
   int totalAlbumListCount = 1;
+  bool isLoadMorePending = false;
 
   //Stream - AlbumList
   final _albumListStreamController = StreamController<List<MAlbum>>();
 
   StreamSink<List<MAlbum>> get albumListSink => _albumListStreamController.sink;
 
-  //Product ----------------------------------------------------------------------
-  //Stream - ProductList
-  final _productListStreamController = StreamController<List<MProduct>>();
-
-  StreamSink<List<MProduct>> get productListSink =>
-      _productListStreamController.sink;
-
   HomeBloc() : super(HomeInitial()) {
     mAlbumDB = AlbumDB();
-    mProductDB = ProductDB();
-    on<HomeAlbumFetchEvent>((event, emit) => albumFetchFromDB(event, emit, 1));
+    on<HomeAlbumFetchEvent>(
+        (event, emit) async => await albumFetch(event, emit, 1));
     on<HomeAlbumLoadMoreEvent>(
-        (event, emit) => albumLoadMoreData(event, emit, event.strIndex));
-    on<HomeProductFetchEvent>(
-        (event, emit) => productFetchFromDB(event, emit, event.albumId, 1));
-    on<HomeProductLoadMoreEvent>((event, emit) => productLoadMoreData(
-        event, emit, event.albumId, event.parentIndex, event.strIndex));
+        (event, emit) => albumLoadMore(event, emit, event.strIndex));
   }
 
-  //Album List -- Local DB
-  albumFetchFromDB(HomeEvent event, Emitter emit, int strIndex) async {
-    bool value = await bindDataFromLocalDB(strIndex);
-    if (value) {
+  Future<void> albumFetch(HomeEvent event, Emitter emit, int strIndex) async {
+    //Step 1 -- Check LocalDB ->
+    //Step 2 -- Data Available -> Then Load the Data into Stream and Emit
+    //Step 3 -- Data is Not Available -> Make Api Call and
+    emit(HomeAlbumInitialState());
+    List<MAlbum> mListT = await bindDataFromLocalDB(strIndex);
+    if (mListT.isEmpty) {
+      await HomeRepository().getAlbumList().then((mResponse) async {
+        if (mResponse.responseCode == 200) {
+          mResponse.data.forEach((element) {
+            mAlbumDB.insertAlbums(element);
+          });
+          totalAlbumListCount = mResponse.data.length;
+          mListT = mResponse.data;
+          callAlbumSuccessEmit(emit, mListT, false);
+        } else {
+          String errMsg = mResponse.message ?? error_somethingWentWrong;
+          emit(HomeAlbumErrorState(errMsg));
+        }
+      });
+    } else {
+      callAlbumSuccessEmit(emit, mListT, false);
+      await HomeRepository().getAlbumList().then((mResponse) async {
+        if (mResponse.responseCode == 200) {
+          totalAlbumListCount = mResponse.data.length;
+          mResponse.data.forEach((element) {
+            mAlbumDB.insertAlbums(element);
+          });
+        }
+      });
+    }
+  }
+
+  Future<void> albumLoadMore(
+      HomeEvent event, Emitter emit, int strIndex) async {
+    //Step 1 -- Check LocalDB ->
+    //Step 2 -- Data Available -> Then Load the Data into Stream and Emit
+    //Step 3 -- Data is Not Available -> Make Api Call and Step 2
+    print("---- AlbumLoadMore --- $strIndex=$totalAlbumListCount");
+    if (strIndex >= totalAlbumListCount) {
+      pageCount = 1;
+      strIndex = 1;
+    }
+    print("---- AlbumLoadMore 11111--- $strIndex,$isLoadMorePending");
+    List<MAlbum> mListT = await bindDataFromLocalDB(strIndex);
+    if (mListT.isEmpty) {
+      HomeRepository().getAlbumList().then((mResponse) async {
+        if (mResponse.responseCode == 200) {
+          mResponse.data.forEach((element) {
+            mAlbumDB.insertAlbums(element);
+          });
+          totalAlbumListCount = mResponse.data.length;
+          mListT = mResponse.data;
+        }
+      });
+    } else {
+      callAlbumSuccessEmit(emit, mListT, true);
+      isLoadMorePending = false;
+    }
+  }
+
+  callAlbumSuccessEmit(Emitter emit, List<MAlbum> mListT, bool isLoadMore) {
+    mList.addAll(mListT);
+    albumListSink.add(mList);
+    if (!isLoadMore) {
       emit(HomeAlbumSuccessState(_albumListStreamController.stream));
-      albumFetchApiCall(event, emit, strIndex, true);
-    } else {
-      albumFetchApiCall(event, emit, strIndex, false);
-    }
-  }
-
-  //Load More LocalDB Data
-  albumLoadMoreData(HomeEvent event, Emitter emit, strIndex) async {
-    bool value = await bindDataFromLocalDB(strIndex);
-    if (!value) {
-      await albumFetchApiCall(event, emit, strIndex, true);
-      if (strIndex >= totalAlbumListCount) {
-        pageCount = 1;
-        add(HomeAlbumLoadMoreEvent(pageCount));
-      }
     }
   }
 
   //Bind UI List with LocalDB
-  Future<bool> bindDataFromLocalDB(strIndex) async {
-    List<MAlbum> mListT = await mAlbumDB.getAlbumList(strIndex);
-    if (mListT.isNotEmpty) {
-      mList.addAll(mListT);
-      albumListSink.add(mList);
-      return true;
-    }
-    return false;
-  }
-
-  //Album List -- API Call
-  albumFetchApiCall(
-      HomeEvent event, Emitter emit, int strIndex, bool hasLocalData) async {
-    MResponse mResponse = await HomeRepository().getAlbumList();
-    if (mResponse.responseCode == 200) {
-      await mResponse.data
-          .forEach((element) => {mAlbumDB.insertAlbums(element)});
-      totalAlbumListCount = mResponse.data.length;
-      if (!hasLocalData) albumFetchFromDB(event, emit, strIndex);
-    } else {
-      //Don't has LocalData and Error
-      if (!hasLocalData) {
-        String errMsg = mResponse.message ?? error_somethingWentWrong;
-        emit(HomeAlbumErrorState(errMsg));
-      }
-    }
-  }
-
-  //Product List -- Local DB
-  productFetchFromDB(
-      HomeEvent event, Emitter emit, int albumId, int startIndex) async {
-    bool value = await bindProductFromLocalDB(albumId, startIndex);
-    if (value) {
-      emit(HomeProductSuccessState(_productListStreamController.stream));
-    } else {
-      productFetchApiCall(event, emit, albumId, false, startIndex);
-    }
-  }
-
-  //Load More LocalDB Data
-  productLoadMoreData(HomeEvent event, Emitter emit, int albumId,
-      int parentIndex, int strIndex) async {
-    bool value = await bindProductFromLocalDB(albumId, strIndex);
-    if (!value) {
-      await productFetchApiCall(event, emit, albumId, true, strIndex);
-      if (strIndex >= totalAlbumListCount) {
-        add(HomeProductLoadMoreEvent(pageCount, parentIndex, albumId));
-      }
-    }
-  }
-
-  //Bind UI List with LocalDB
-  Future<bool> bindProductFromLocalDB(int albumId, int strIndex) async {
-    List<MProduct> mListT = await mProductDB.getProductList(albumId, strIndex);
-    if (mListT.isNotEmpty) {
-      var map = <int, List<MProduct>>{albumId: mListT};
-      productListSink.add(mListT);
-      return true;
-    }
-    return false;
-  }
-
-  //Product List -- API Call
-  productFetchApiCall(HomeEvent event, Emitter emit, int albumId,
-      bool hasLocalData, int strIndex) async {
-    MResponse mResponse = await HomeRepository().getProductList(albumId);
-    if (mResponse.responseCode == 200) {
-      mResponse.data.forEach((element) => {mProductDB.insertProducts(element)});
-      if (!hasLocalData) productFetchFromDB(event, emit, albumId, strIndex);
-    } else {
-      //Don't has LocalData and Error
-      if (!hasLocalData) {
-        String errMsg = mResponse.message ?? error_somethingWentWrong;
-        emit(HomeProductErrorState(errMsg));
-      }
-    }
-  }
-
-  @override
-  Future<void> close() {
-    _albumListStreamController.close();
-    _productListStreamController.close();
-    return super.close();
+  Future<List<MAlbum>> bindDataFromLocalDB(strIndex) async {
+    return await mAlbumDB.getAlbumList(strIndex);
   }
 }
